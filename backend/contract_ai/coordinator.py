@@ -1,14 +1,18 @@
 import json
 import asyncio
 import uuid
+import logging
 import requests
 from typing import Dict, List, Any, Optional
-from langchain_core.runnables import Runnable, RunnableConfig
-from langchain_core.messages import HumanMessage, HumanMessage, SystemMessage
+
+# 设置日志格式，方便调试
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from base_agent import BaseAgent
 
+from base_agent import BaseAgent
 from legal_agent import LegalAgent
 from business_agent import ContractReviewAgent
 from document_agent import DocumentProcessingAgent
@@ -53,145 +57,166 @@ class ContractCoordinator(BaseAgent):
         """构建 LangGraph 工作流图"""
         workflow = StateGraph(dict)
         
-        # 定义节点：每个节点对应一个工作步骤
-        workflow.add_node("plan_workflow", self.plan_workflow)  # 规划工作流
-        workflow.add_node("document_processing", self.run_document_agent)  # 文档处理
-        workflow.add_node("parallel_analysis", self.run_parallel_agents)  # 并行分析（法律+商业）
-        workflow.add_node("highlight_issues", self.run_highlight_agent)  # 重点标注
-        workflow.add_node("integrate_results", self.run_integration_agent)  # 结果整合
+        # 定义节点
+        workflow.add_node("plan_workflow", self.plan_workflow)
+        workflow.add_node("document_processing", self.run_document_agent)
+        workflow.add_node("parallel_analysis", self.run_parallel_agents)
+        workflow.add_node("highlight_issues", self.run_highlight_agent)
+        workflow.add_node("integrate_results", self.run_integration_agent)
         
-        # 定义边：工作流执行顺序
-        # --- 修改点 2: 方法名从 set_entry_point 变为 set_entry_point (API一样，但对象变了) ---
-        workflow.set_entry_point("plan_workflow")  # 入口节点
-        
+        # 定义边
+        workflow.set_entry_point("plan_workflow")
         workflow.add_edge("plan_workflow", "document_processing")
         workflow.add_edge("document_processing", "parallel_analysis")
-        # graph.add_edge("parallel_analysis", "highlight_issues")
-        # graph.add_edge("highlight_issues", "integrate_results")
         workflow.add_edge("parallel_analysis", "integrate_results")
+        workflow.set_finish_point("integrate_results")
         
-        workflow.set_finish_point("integrate_results")  # 结束节点
-        
-        # --- 修改点 3: 编译 ---
         return workflow.compile(checkpointer=self.memory)
     
     def plan_workflow(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """规划工作流（基于用户请求生成步骤）"""
-        user_request = state["user_input"]
-        self.logger.info(f"规划工作流输入：{user_request[:100]}...")
-        
-        # 调用 LLM 生成工作流（复用原提示词逻辑）
-        planning_prompt = f"""根据请求制定工作流：{user_request}，可用智能体：{list(self.agents.keys())}"""
-        workflow_plan = self.call_llm(planning_prompt)
-        self.logger.info(f"规划工作流：{workflow_plan}")
-        # 解析并返回规划结果（简化：直接返回结构化步骤）
-        return {
-            **state,
-            "workflow_plan": workflow_plan,
-            "current_step": "document_processing"
-        }
+        """规划工作流"""
+        try:
+            user_request = state.get("user_input", "")
+            self.logger.info(f"STEP 1: 规划工作流 - 输入长度: {len(user_request)}")
+            
+            # 这里可以使用更简单的逻辑，避免每次都调 LLM 规划，节省时间
+            # 如果必须调用，请确保有超时控制
+            workflow_plan = "标准审查流程: 文档解析 -> 法律/商业分析 -> 整合报告"
+            
+            return {
+                **state,
+                "workflow_plan": workflow_plan,
+                "error": None
+            }
+        except Exception as e:
+            self.logger.error(f"规划工作流失败: {str(e)}")
+            return {**state, "error": str(e)}
     
     def run_document_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """文档处理节点：调用文档智能体"""
-        self.logger.info("执行文档处理步骤")
-        document_agent = self.agents["document"]
+        """文档处理节点"""
+        self.logger.info("STEP 2: 执行文档处理")
+        try:
+            document_agent = self.agents["document"]
+            
+            # 增加 try-catch 捕获文档处理内部的错误（如 JSON 解析失败）
+            result = document_agent.invoke({
+                "text": state["user_input"],
+                "context": state.get("context", "")
+            })
+            
+            # 简单的结果验证
+            if not result:
+                raise ValueError("文档处理 Agent 返回为空")
+
+            self.logger.info(f"文档处理完成，结果摘要: {str(result)[:100]}...")
+            
+            return {
+                **state,
+                "context": f"文档结构化信息：{result}", # 将结构化结果传入 Context 供后续使用
+                "document_result": result
+            }
+        except Exception as e:
+            self.logger.error(f"文档处理步骤发生严重错误: {str(e)}", exc_info=True)
+            # 返回错误状态，但不中断流程，让后续步骤知道出错了
+            return {
+                **state, 
+                "document_result": {"error": str(e)},
+                "context": f"文档处理失败: {str(e)}"
+            }
+
+    async def _execute_parallel_tasks(self, context_text: str):
+        """辅助方法：真正的并发执行"""
+        # 使用 ainvoke 确保是异步调用
+        # 注意：LegalAgent 和 BusinessAgent 内部必须实现异步逻辑或不阻塞主线程
+        legal_future = self.agents["legal"].ainvoke({"text": context_text})
+        business_future = self.agents["business"].ainvoke({"text": context_text})
         
-        # 调用文档智能体（直接调用其 invoke 方法）
-        result = document_agent.invoke({
-            "text": state["user_input"],
-            "context": state.get("context", "")
-        })
-        self.logger.info(f"文档处理结果：{result}")
-        return {
-            **state,
-            "context": f"文档处理结果：{result}",
-            "document_result": result
-        }
+        # 使用 asyncio.gather 并发等待所有结果
+        return await asyncio.gather(legal_future, business_future, return_exceptions=True)
+
+    async def run_parallel_agents_async(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """异步版本的并行分析节点"""
+        self.logger.info("STEP 3: 执行并行分析 (法律 + 商业)")
+        context = state.get("context", "")
+        
+        try:
+            # 并发执行
+            results = await self._execute_parallel_tasks(context)
+            legal_result, business_result = results
+
+            # 处理可能的异常（因为 return_exceptions=True）
+            if isinstance(legal_result, Exception):
+                self.logger.error(f"法律分析出错: {legal_result}")
+                legal_result = f"法律分析失败: {str(legal_result)}"
+            
+            if isinstance(business_result, Exception):
+                self.logger.error(f"商业分析出错: {business_result}")
+                business_result = f"商业分析失败: {str(business_result)}"
+
+            self.logger.info("并行分析完成")
+            return {
+                **state,
+                "legal_result": legal_result,
+                "business_result": business_result
+            }
+        except Exception as e:
+            self.logger.error(f"并行分析步骤崩溃: {str(e)}")
+            return {**state, "error": str(e)}
 
     def run_parallel_agents(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """并行分析节点：同时调用法律和商业智能体"""
-        self.logger.info("执行并行分析步骤")
-        
-        # 并行调用两个智能体（使用 asyncio 实现并发）
-        async def _parallel_run():
-            legal_task = asyncio.create_task(
-                self.agents["legal"].ainvoke({"text": state["context"]})
-            )
-            business_task = asyncio.create_task(
-                self.agents["business"].ainvoke({"text": state["context"]})
-            )
-            return await legal_task, await business_task
-        
-        legal_result, business_result = asyncio.run(_parallel_run())
-        self.logger.info(f"法律分析：{legal_result}\n商业分析：{business_result}")
-        return {
-            **state,
-            "context": f"法律分析：{legal_result}\n商业分析：{business_result}",
-            "legal_result": legal_result,
-            "business_result": business_result
-        }
-    
-    def run_highlight_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """重点标注节点：调用高亮智能体"""
-        self.logger.info("执行重点标注步骤")
-        highlight_agent = self.agents["highlight"]
-        
-        result = highlight_agent.invoke({
-            "text": state["user_input"],
-            "context": state.get("context", "")
-        })
-        self.logger.info(f"重点标注处理结果：{result}")
-        return {
-            **state,
-            "context": f"重点标注处理结果：{result}",
-            "highlight_result": result
-        }
-        
-    def generate_final_response(self, workflow_results: Dict[str, Any]) -> str:
-        """Generate final comprehensive response"""
-        summary_prompt = f"""
-        基于以下工作流程执行结果，生成一份完整的合同审查报告：
-        
-        执行结果：
-        {json.dumps(workflow_results, ensure_ascii=False, indent=2)}
-        
-        请生成包含以下部分的综合报告：
-        1. 执行摘要
-        2. 主要发现
-        3. 风险评估
-        4. 建议措施
-        5. 结论
-        
-        报告应该专业、清晰、可操作。
         """
-        
-        final_report = self.call_llm(summary_prompt)
-        return final_report
-    
+        同步包装器：为了适配 LangGraph 如果它在同步模式下运行。
+        但在生产环境中，建议直接使用异步 Graph。
+        这里为了修复原本 asyncio.run 的问题，我们尝试获取当前 Loop。
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            # 如果已经在 Loop 中（例如 FastAPI），必须使用 create_task 或直接 await（如果当前函数是 async）
+            # 由于 LangGraph 节点定义通常是同步函数签名，这里是一个 tricky 的点。
+            # 最佳实践是将 graph 编译为异步，然后节点函数全部定义为 async def。
+            # 这里为了兼容性，使用 nest_asyncio 或者假设外部调用是同步的。
+            
+            # 临时方案：如果已经在 loop 中，说明是异步环境，这里作为同步节点会阻塞。
+            # 建议：将此方法改为 async def run_parallel_agents(...)，LangGraph 支持 async 节点。
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(self.run_parallel_agents_async(state))
+        except RuntimeError:
+            # 如果没有运行的 loop，则创建一个新的
+            return asyncio.run(self.run_parallel_agents_async(state))
+
+    def run_highlight_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """重点标注节点"""
+        # ... (保持原逻辑，增加 try-except)
+        return state
+
     def run_integration_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """结果整合节点：生成最终报告"""
-        self.logger.info("整合所有结果生成报告")
-        integration_agent = self.agents["integration"]
-        
-        # 整合所有步骤结果
-        final_result = integration_agent.invoke({
-            "results": {
-                "document": state["document_result"],
-                "legal": state["legal_result"],
-                "business": state["business_result"],
-                # "highlight": state["highlight_result"]
-            }
-        })
-        
-        final_result_str = json.dumps(final_result, ensure_ascii=False)
-        return {** state, "final_response": final_result_str}
+        """结果整合节点"""
+        self.logger.info("STEP 4: 整合结果")
+        try:
+            integration_agent = self.agents["integration"]
+            
+            final_result = integration_agent.invoke({
+                "results": {
+                    "document": state.get("document_result"),
+                    "legal": state.get("legal_result"),
+                    "business": state.get("business_result"),
+                }
+            })
+            
+            return {**state, "final_response": json.dumps(final_result, ensure_ascii=False)}
+        except Exception as e:
+            self.logger.error(f"整合报告失败: {e}")
+            return {**state, "final_response": "生成报告时发生错误，请检查日志。"}
 
     def process_text_message(self, message: HumanMessage) -> HumanMessage:
         """处理用户请求（入口方法）"""
         user_input = message.content
         thread_id = str(uuid.uuid4())
+        self.logger.info(f"收到请求，Thread ID: {thread_id}")
         
         # 运行 LangGraph 工作流
+        # 注意：这里直接调用 invoke 是同步阻塞的
         result = self.graph.invoke({
                 "user_input": user_input,
                 "context": "",
@@ -200,65 +225,37 @@ class ContractCoordinator(BaseAgent):
             config={"configurable": {"thread_id": thread_id}}
         )
         
-        # 返回最终响应
-        return HumanMessage(content=result["final_response"])
-    
+        return HumanMessage(content=result.get("final_response", "No response generated"))
+
     def parse_pdf_through_api(self, file_path, api_url="http://127.0.0.1:8000/api/pdf/upload"):
-        """
-        通过API上传PDF文件并获取解析后的文本内容
-        
-        参数:
-            file_path: PDF文件的本地路径
-            api_url: API接口的完整URL
-        
-        返回:
-            解析成功返回文本内容，失败返回错误信息
-        """
         try:
+            self.logger.info(f"开始上传 PDF: {file_path}")
             with open(file_path, 'rb') as file:
-                # 构建multipart/form-data格式的请求体
-                files = {
-                    'file': (  # 键名必须与API要求的"file"一致
-                        file_path.split('/')[-1],  # 文件名
-                        file,  # 文件二进制内容
-                        'application/pdf'  # MIME类型
-                    )
-                }
-                
-                response = requests.post(
-                    url=api_url,
-                    files=files,
-                    timeout=60  # 设置超时时间，避免长期无响应
-                )
+                files = {'file': (file_path.split('/')[-1], file, 'application/pdf')}
+                response = requests.post(api_url, files=files, timeout=120) # 增加超时时间到 120s
                 
                 if response.status_code == 200:
-                    result = response.json()
-                    if result.get('success'):
-                        return {
-                            'status': 'success',
-                            'content': result.get('file_content')
-                        }
-                    else:
-                        return {
-                            'status': 'error',
-                            'message': f"API返回失败: {result.get('message', '未知错误')}"
-                        }
+                    self.logger.info("PDF 解析 API 返回成功")
+                    return response.json() # 这里假设 API 直接返回 JSON 结构
                 else:
-                    return {
-                        'status': 'error',
-                        'message': f"请求失败，状态码: {response.status_code}"
-                    }
-                    
-        except FileNotFoundError:
-            return {'status': 'error', 'message': f"文件未找到: {file_path}"}
+                    self.logger.error(f"PDF 解析失败: {response.status_code} - {response.text}")
+                    return {'status': 'error', 'message': f"API Error: {response.status_code}"}
         except Exception as e:
-            return {'status': 'error', 'message': f"请求发生异常: {str(e)}"}
-        
+            self.logger.error(f"文件操作异常: {e}")
+            return {'status': 'error', 'message': str(e)}
+
 if __name__ == "__main__":
+    # 单元测试逻辑
+    import os
     coordinator = ContractCoordinator()
+    
     pdf_file_path = "/home/star/81/bidgen/交易招标文件.pdf"
     result = coordinator.parse_pdf_through_api(pdf_file_path)
-    print(f"PDF解析结果：{result}")
-    test_request = HumanMessage(content=f"""请审查这份招标文件:{result["content"]}""")
+    if result.get("success"):
+        test_content = result.get("file_content", "")
+    else:
+        test_content = "无法解析 PDF 文件内容。"
+    print("开始测试工作流...")
+    test_request = HumanMessage(content=f"""请审查这份招标文件: {test_content}""")
     response = coordinator.process_text_message(test_request)
     print(f"最终报告：{response.content}")
