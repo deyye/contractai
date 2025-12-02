@@ -3,14 +3,16 @@ import { Layout, Upload, Button, message, Row, Col, Spin, Empty } from 'antd';
 import { InboxOutlined, FilePdfOutlined, RocketOutlined } from '@ant-design/icons';
 import { uploadPDF, startReview } from './api/service';
 import RiskPanel from './components/RiskPanel';
-import { pdfjs, Document, Page } from 'react-pdf';
+import { pdfjs } from 'react-pdf';
 
 // 修正后的 CSS 引入路径 (去除 /esm/)
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
 // 设置 PDF worker
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
+// pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const { Header, Content } = Layout;
 const { Dragger } = Upload;
