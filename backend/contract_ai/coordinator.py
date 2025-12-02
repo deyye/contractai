@@ -4,6 +4,7 @@ import uuid
 import logging
 import requests
 from typing import Dict, List, Any, Optional
+import concurrent.futures
 
 # 设置日志格式
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -175,8 +176,7 @@ class ContractCoordinator(BaseAgent):
         注意: BaseAgent没有ainvoke方法，这里使用同步调用但模拟并行效果
         """
         self.logger.info("🔄 STEP 3: 执行并行分析 (法律 + 商业)")
-        context = state.get("context", "")
-        
+        context_text = json.dumps(state.get("document_result", {}), ensure_ascii=False)      
         # 检查是否有错误需要跳过分析
         if state.get("error"):
             self.logger.warning("⚠️ 检测到上游错误，跳过分析步骤")
@@ -185,65 +185,35 @@ class ContractCoordinator(BaseAgent):
                 "legal_result": "因文档处理失败而跳过法律分析",
                 "business_result": "因文档处理失败而跳过商业分析"
             }
-        
+        async def _parallel_run():
+            # 使用 ainvoke 异步调用
+            legal_task = self.agents["legal"].ainvoke({"text": context_text})
+            business_task = self.agents["business"].ainvoke({"text": context_text})
+            # 并发等待
+            return await asyncio.gather(legal_task, business_task, return_exceptions=True)
         try:
-            # 方案1: 真正的并行（使用线程）
-            # 注意：由于GIL，Python的多线程在CPU密集型任务上不会真正并行
-            # 但对于I/O密集型任务（如LLM API调用）是有效的
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            import time
-            
-            start_time = time.time()
-            
-            def call_legal():
-                self.logger.info("  📝 开始法律分析...")
-                result = self.agents["legal"].invoke({"text": context})
-                self.logger.info(f"  ✅ 法律分析完成 (耗时: {time.time() - start_time:.2f}秒)")
-                return result
-            
-            def call_business():
-                self.logger.info("  💼 开始商业分析...")
-                result = self.agents["business"].invoke({"text": context})
-                self.logger.info(f"  ✅ 商业分析完成 (耗时: {time.time() - start_time:.2f}秒)")
-                return result
-            
-            # 使用线程池并发执行
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                # 提交任务
-                legal_future = executor.submit(call_legal)
-                business_future = executor.submit(call_business)
-                
-                # 等待结果（设置超时）
-                try:
-                    legal_result = legal_future.result(timeout=120)  # 2分钟超时
-                except Exception as e:
-                    self.logger.error(f"  ❌ 法律分析出错: {e}")
-                    legal_result = f"法律分析失败: {str(e)}"
-                
-                try:
-                    business_result = business_future.result(timeout=120)  # 2分钟超时
-                except Exception as e:
-                    self.logger.error(f"  ❌ 商业分析出错: {e}")
-                    business_result = f"商业分析失败: {str(e)}"
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            # 如果我们在 FastAPI 的事件循环中，不能直接用 asyncio.run
+            # 解决方案：使用线程池在另一个线程中运行一个新的 Loop
+            self.logger.info("检测到运行中的 Event Loop，切换到线程池执行异步任务")
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                results = pool.submit(asyncio.run, _parallel_run()).result()
+        else:
+            # 如果是脚本直接运行，直接用 asyncio.run
+            results = asyncio.run(_parallel_run())
+        legal_result, business_result = results
+        if isinstance(legal_result, Exception): legal_result = f"Error: {str(legal_result)}"
+        if isinstance(business_result, Exception): business_result = f"Error: {str(business_result)}"
 
-            total_time = time.time() - start_time
-            self.logger.info(f"✅ 并行分析完成 (总耗时: {total_time:.2f}秒)")
-            
-            return {
-                **state,
-                "legal_result": legal_result,
-                "business_result": business_result,
-                "error": None
-            }
-            
-        except Exception as e:
-            self.logger.error(f"❌ 并行分析步骤崩溃: {str(e)}", exc_info=True)
-            return {
-                **state, 
-                "legal_result": f"法律分析失败: {str(e)}",
-                "business_result": f"商业分析失败: {str(e)}",
-                "error": str(e)
-            }
+        self.logger.info("并行分析完成")
+        return {
+            **state,
+            "legal_result": legal_result,
+            "business_result": business_result
+        }
 
     def run_integration_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """结果整合节点"""

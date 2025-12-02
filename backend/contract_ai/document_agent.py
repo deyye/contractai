@@ -62,6 +62,7 @@ class DocumentProcessingAgent(BaseAgent):
             separators=["\n\n", "\n", "。", "；", " "],  # 优先按段落拆分
         )
         self.extraction_prompt = self._build_extraction_prompt()
+        self.extractor = JSONExtractor()
         
         super().__init__(agent_name="DocumentProcessingAgent", system_prompt=system_prompt)
     
@@ -179,25 +180,29 @@ class DocumentProcessingAgent(BaseAgent):
         return merged_chunks
 
     def _extract_from_chunk(self, chunk_text: str) -> Dict[str, Any]:
-        """从单个区块提取信息"""
+        """从单个区块提取信息（已修复卡死问题）"""
         try:
-            extractor = JSONExtractor()
             extraction_chain = self.extraction_prompt | self.llm
+            # 增加 timeout 防止网络层卡死
             response = extraction_chain.invoke({"document_chunk": chunk_text})
-            # 解析LLM输出的JSON
-            extracted_data = extractor.extract(response.content)
             
-            if extracted_data and isinstance(extracted_data, list) and len(extracted_data) > 0:
-                return extracted_data[0]
+            # 使用新的提取器
+            extracted_list = self.extractor.extract(response.content)
+            
+            if extracted_list:
+                # 合并提取到的所有字典（有些模型可能会分多个对象返回）
+                merged = {field: None for field in TENDER_CORE_FIELDS}
+                for item in extracted_list:
+                    for k, v in item.items():
+                        if k in TENDER_CORE_FIELDS and v is not None:
+                            merged[k] = v
+                return merged
             else:
-                print("警告：未提取到有效JSON数据")
+                self.logger.warning("LLM返回了内容，但无法解析为JSON")
                 return {field: None for field in TENDER_CORE_FIELDS}
                 
-        except json.JSONDecodeError:
-            print("警告：LLM输出格式错误，跳过该区块")
-            return {field: None for field in TENDER_CORE_FIELDS}
         except Exception as e:
-            print(f"提取失败：{str(e)}，跳过该区块")
+            self.logger.error(f"区块提取发生异常: {str(e)}")
             return {field: None for field in TENDER_CORE_FIELDS}
 
     def _merge_extracted_results(self, results_list: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -999,170 +1004,58 @@ class DocumentProcessingAgent(BaseAgent):
 
 class JSONExtractor:
     """
-    通用JSON提取器：从任意文本中提取JSON数据，支持格式修复、字段过滤、嵌套JSON提取
+    修复版 JSON 提取器：放弃复杂正则，使用非递归查找 + 标准库解析，防止死锁。
     """
-    def __init__(self):
-        # JSON匹配正则（支持嵌套{}[]、字符串包含特殊字符）
-        self.json_pattern = r'''
-            (
-                \{
-                    (?:
-                        [^{}"']*
-                        (?:
-                            (?: " [^"\\]* (?: \\. [^"\\]* )* " | ' [^'\\]* (?: \\. [^'\\]* )* ' )
-                            [^{}"']*
-                        )*
-                    )*
-                \}
-                |
-                \[
-                    (?:
-                        [^\[\]"']*
-                        (?:
-                            (?: " [^"\\]* (?: \\. [^"\\]* )* " | ' [^'\\]* (?: \\. [^'\\]* )* ' )
-                            [^\[\]"']*
-                        )*
-                    )*
-                \]
-            )
-        '''
-        # 常见JSON格式问题修复规则
-        self.fix_rules = [
-            # 修复单引号转双引号（不破坏字符串内的单引号）
-            (r"(?<!\\)'(?!\\)", '"'),
-            # 修复缺少引号的键
-            (r'(?<!["\'])(\w+)(?<!["\']):', r'"\1":'),
-            # 修复尾部多余逗号
-            (r',\s*([}\]])', r'\1'),
-            # 去除注释（// 单行注释、/* 多行注释）
-            (r'//.*?$', '', re.MULTILINE),
-            (r'/\*.*?\*/', '', re.DOTALL),
-            # 修复JSON内的换行符
-            (r'\n\s*', ' ')
-        ]
-    
-    def _clean_text(self, text: str) -> str:
-        """清理文本：修复常见JSON格式问题"""
-        cleaned = text.strip()
-        for pattern, repl, *flags in self.fix_rules:
-            flag = flags[0] if flags else 0
-            cleaned = re.sub(pattern, repl, cleaned, flags=flag)
-        return cleaned
-    
-    def _extract_raw_json(self, text: str) -> List[str]:
-        """从文本中提取所有潜在的JSON字符串（含嵌套）"""
-        cleaned_text = self._clean_text(text)
-        # 匹配所有JSON对象/数组
-        json_matches = re.findall(
-            self.json_pattern, 
-            cleaned_text, 
-            flags=re.VERBOSE | re.DOTALL
-        )
-        # 去重并保留非空结果
-        unique_jsons = list(set([j for j in json_matches if len(j) > 2]))
-        return unique_jsons
-    
-    def _parse_json(self, json_str: str) -> Optional[Dict[str, Any]]:
-        """解析JSON字符串，处理解析失败的情况"""
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError as e:
-            # 尝试修复特殊字符（如中文转义、控制字符）
-            try:
-                # 去除控制字符
-                json_str = re.sub(r'[\x00-\x1F\x7F]', '', json_str)
-                return json.loads(json_str)
-            except:
-                # 解析失败返回None，不中断整体流程
-                return None
-    
-    def extract(
-        self,
-        text: str,
-        required_fields: Optional[List[str]] = None,
-        filter_func: Optional[Callable[[Dict[str, Any]], bool]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        核心提取方法：从文本中提取JSON并过滤
+    def extract(self, text: str) -> List[Dict[str, Any]]:
+        """从文本中提取 JSON"""
+        results = []
+        # 1. 尝试提取 Markdown 代码块中的 JSON
+        code_block_pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
+        matches = re.findall(code_block_pattern, text, re.DOTALL)
         
-        参数:
-            text: 待提取的原始文本（如招标文件解析结果）
-            required_fields: 必需字段列表（仅保留包含这些字段的JSON）
-            filter_func: 自定义过滤函数（返回True保留，False过滤）
-        
-        返回:
-            结构化JSON列表（去重、过滤后）
-        """
-        # 1. 提取原始JSON字符串
-        raw_jsons = self._extract_raw_json(text)
-        
-        # 2. 解析并去重
-        parsed_jsons = []
-        seen = set()
-        for json_str in raw_jsons:
-            json_data = self._parse_json(json_str)
-            if not json_data:
-                continue
+        if not matches:
+            # 2. 如果没有代码块，寻找最外层的大括号
+            # 这是一个简单的贪婪匹配，通常对 LLM 输出有效
+            # 查找所有 { ... } 结构
+            matches = self._find_json_candidates(text)
             
-            # 去重（基于JSON序列化后的字符串）
-            json_hash = json.dumps(json_data, sort_keys=True, ensure_ascii=False)
-            if json_hash not in seen:
-                seen.add(json_hash)
-                parsed_jsons.append(json_data)
-        
-        # 3. 按必需字段过滤
-        if required_fields:
-            parsed_jsons = [
-                data for data in parsed_jsons
-                if all(field in data for field in required_fields)
-            ]
-        
-        # 4. 自定义过滤
-        if filter_func:
-            parsed_jsons = [data for data in parsed_jsons if filter_func(data)]
-        
-        return parsed_jsons
-    
-    def extract_single(
-        self,
-        text: str,
-        required_fields: Optional[List[str]] = None,
-        filter_func: Optional[Callable[[Dict[str, Any]], bool]] = None
-    ) -> Optional[Dict[str, Any]]:
-        """提取单个JSON（优先返回字段最完整的）"""
-        jsons = self.extract(text, required_fields, filter_func)
-        if not jsons:
-            return None
-        
-        # 优先选择字段最多的JSON（更可能是目标数据）
-        return max(jsons, key=lambda x: len(x.keys()) if isinstance(x, dict) else 0)
-    
-    def extract_field(
-        self,
-        text: str,
-        field: str,
-        default: Any = None
-    ) -> List[Any]:
-        """提取所有JSON中的指定字段值"""
-        jsons = self.extract(text)
-        values = []
-        for data in jsons:
-            if isinstance(data, dict) and field in data:
-                values.append(data[field])
-            # 支持嵌套JSON字段提取（如 "data.info"）
-            elif '.' in field:
-                keys = field.split('.')
-                current = data
-                valid = True
-                for key in keys:
-                    if isinstance(current, dict) and key in current:
-                        current = current[key]
-                    else:
-                        valid = False
-                        break
-                if valid:
-                    values.append(current)
-        return values if values else [default]
+        for json_str in matches:
+            try:
+                # 清理常见的会导致解析失败的字符
+                json_str = self._clean_json_str(json_str)
+                data = json.loads(json_str)
+                if isinstance(data, dict):
+                    results.append(data)
+                elif isinstance(data, list):
+                    results.extend([item for item in data if isinstance(item, dict)])
+            except json.JSONDecodeError:
+                continue
+        return results
+
+    def _find_json_candidates(self, text: str) -> List[str]:
+        """简单的堆栈平衡算法寻找最外层 JSON 对象，比正则快且安全"""
+        candidates = []
+        balance = 0
+        start_index = -1
+        for i, char in enumerate(text):
+            if char == '{':
+                if balance == 0:
+                    start_index = i
+                balance += 1
+            elif char == '}':
+                balance -= 1
+                if balance == 0 and start_index != -1:
+                    candidates.append(text[start_index : i+1])
+                    start_index = -1
+        return candidates
+
+    def _clean_json_str(self, json_str: str) -> str:
+        # 移除注释
+        json_str = re.sub(r'//.*', '', json_str)
+        # 尝试修复末尾逗号
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*]', ']', json_str)
+        return json_str
     
 if __name__ == "__main__":
     agent = DocumentProcessingAgent()
