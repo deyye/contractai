@@ -5,7 +5,7 @@ import requests
 from typing import Dict, List, Any, Optional
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.messages import HumanMessage, HumanMessage, SystemMessage
-from langgraph.graph import Graph  # 核心：LangGraph 图结构
+from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from base_agent import BaseAgent
 
@@ -49,27 +49,31 @@ class ContractCoordinator(BaseAgent):
         self.memory = MemorySaver()
         self.graph = self._build_workflow_graph()
     
-    def _build_workflow_graph(self) -> Graph:
+    def _build_workflow_graph(self):
         """构建 LangGraph 工作流图"""
-        graph = Graph()
+        workflow = StateGraph(dict)
         
         # 定义节点：每个节点对应一个工作步骤
-        graph.add_node("plan_workflow", self.plan_workflow)  # 规划工作流
-        graph.add_node("document_processing", self.run_document_agent)  # 文档处理
-        graph.add_node("parallel_analysis", self.run_parallel_agents)  # 并行分析（法律+商业）
-        graph.add_node("highlight_issues", self.run_highlight_agent)  # 重点标注
-        graph.add_node("integrate_results", self.run_integration_agent)  # 结果整合
+        workflow.add_node("plan_workflow", self.plan_workflow)  # 规划工作流
+        workflow.add_node("document_processing", self.run_document_agent)  # 文档处理
+        workflow.add_node("parallel_analysis", self.run_parallel_agents)  # 并行分析（法律+商业）
+        workflow.add_node("highlight_issues", self.run_highlight_agent)  # 重点标注
+        workflow.add_node("integrate_results", self.run_integration_agent)  # 结果整合
         
         # 定义边：工作流执行顺序
-        graph.set_entry_point("plan_workflow")  # 入口节点
-        graph.add_edge("plan_workflow", "document_processing")
-        graph.add_edge("document_processing", "parallel_analysis")
+        # --- 修改点 2: 方法名从 set_entry_point 变为 set_entry_point (API一样，但对象变了) ---
+        workflow.set_entry_point("plan_workflow")  # 入口节点
+        
+        workflow.add_edge("plan_workflow", "document_processing")
+        workflow.add_edge("document_processing", "parallel_analysis")
         # graph.add_edge("parallel_analysis", "highlight_issues")
         # graph.add_edge("highlight_issues", "integrate_results")
-        graph.add_edge("parallel_analysis", "integrate_results")
-        graph.set_finish_point("integrate_results")  # 结束节点
+        workflow.add_edge("parallel_analysis", "integrate_results")
         
-        return graph.compile(checkpointer=self.memory)  # 编译图（带状态检查点）
+        workflow.set_finish_point("integrate_results")  # 结束节点
+        
+        # --- 修改点 3: 编译 ---
+        return workflow.compile(checkpointer=self.memory)
     
     def plan_workflow(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """规划工作流（基于用户请求生成步骤）"""

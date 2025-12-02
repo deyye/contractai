@@ -4,8 +4,12 @@ import os
 import uuid
 import sys
 
-# 将 contract_ai 加入路径，确保能 import
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../"))
+# 获取当前文件的目录 (backend/app/api)
+current_dir = os.path.dirname(__file__)
+# 1. 添加 backend 目录到路径 (用于 import contract_ai.coordinator)
+sys.path.append(os.path.join(current_dir, "../../"))
+# 2. 【关键修复】添加 contract_ai 目录到路径 (用于解决 coordinator.py 内部的 "from base_agent import ..." 报错)
+sys.path.append(os.path.join(current_dir, "../../contract_ai"))
 
 from contract_ai.coordinator import ContractCoordinator
 from app.services.pdf_service import PDFService

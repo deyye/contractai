@@ -3,7 +3,7 @@ import json
 import requests
 from typing import Dict, List, Any, Optional, Callable
 from base_agent import BaseAgent
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
 
 
