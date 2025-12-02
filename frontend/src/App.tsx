@@ -3,7 +3,7 @@ import { Layout, Upload, Button, message, Row, Col, Spin, Empty } from 'antd';
 import { InboxOutlined, FilePdfOutlined, RocketOutlined } from '@ant-design/icons';
 import { uploadPDF, startReview } from './api/service';
 import RiskPanel from './components/RiskPanel';
-import { pdfjs } from 'react-pdf';
+import { pdfjs, Document as PDFDocument, Page } from 'react-pdf';
 
 // 修正后的 CSS 引入路径 (去除 /esm/)
 import 'react-pdf/dist/Page/AnnotationLayer.css';
@@ -156,7 +156,7 @@ const App: React.FC = () => {
                    </Button>
                 </div>
                 
-                <Document
+                <PDFDocument
                   file={pdfFile}
                   onLoadSuccess={onDocumentLoadSuccess}
                   loading={<div style={{ color: 'white', marginTop: 20 }}><Spin size="large" /> <div style={{marginTop: 10}}>正在加载 PDF...</div></div>}
@@ -173,7 +173,7 @@ const App: React.FC = () => {
                       style={{ marginBottom: 16 }}
                     />
                   ))}
-                </Document>
+                </PDFDocument>
               </div>
             )}
           </Col>
