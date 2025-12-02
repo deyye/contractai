@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Layout, Upload, Button, message, Row, Col, Spin, Empty } from 'antd';
 import { InboxOutlined, FilePdfOutlined, RocketOutlined } from '@ant-design/icons';
 import { uploadPDF, startReview } from './api/service';
@@ -23,6 +23,11 @@ const App: React.FC = () => {
   const [reviewResult, setReviewResult] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [pdfNumPages, setPdfNumPages] = useState<number>(0);
+
+  const pdfOptions = useMemo(() => ({
+    cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
+    cMapPacked: true,
+  }), []);
 
   // 文件上传处理
   const handleUpload = async (file: File) => {
@@ -159,6 +164,7 @@ const App: React.FC = () => {
                 <PDFDocument
                   file={pdfFile}
                   onLoadSuccess={onDocumentLoadSuccess}
+                  options={pdfOptions}
                   loading={<div style={{ color: 'white', marginTop: 20 }}><Spin size="large" /> <div style={{marginTop: 10}}>正在加载 PDF...</div></div>}
                   error={<div style={{ color: 'white' }}>PDF 加载失败，请检查文件是否损坏</div>}
                 >

@@ -195,12 +195,16 @@ class DocumentProcessingAgent(BaseAgent):
             return {field: None for field in TENDER_CORE_FIELDS}
 
     def _merge_extracted_results(self, results_list: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """合并多区块提取结果：取非空值、去重、整合列表"""
+        """合并多区块提取结果:取非空值、去重、整合列表"""
         merged_result = {field: None for field in TENDER_CORE_FIELDS}
         
         for result in results_list:
+            # 修复:result本身就是字典,不需要通过[0]索引访问
+            if not isinstance(result, dict):
+                continue
+                
             for field in TENDER_CORE_FIELDS:
-                value = result[0].get(field)
+                value = result.get(field)
                 if value is None or value == "null":
                     continue
                 
@@ -1138,4 +1142,4 @@ if __name__ == "__main__":
             "context": state.get("context", "")
         })
     agent.logger.info("招标文件处理结果：")
-    agent.logger.info(result['response_text'])
+    agent.logger.info(result['response_text'])  
