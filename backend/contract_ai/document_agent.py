@@ -187,7 +187,6 @@ class DocumentProcessingAgent(BaseAgent):
             # 解析LLM输出的JSON
             extracted_data = extractor.extract(response.content)
             
-            # 修复：extract返回的是列表，需要取第一个元素
             if extracted_data and isinstance(extracted_data, list) and len(extracted_data) > 0:
                 return extracted_data[0]
             else:
@@ -249,13 +248,13 @@ class DocumentProcessingAgent(BaseAgent):
             return merged_result
         
         # 限制全文长度，避免token超限（最多使用前8000字符）
-        truncated_text = full_text[:8000] if len(full_text) > 8000 else full_text
-        print(f"使用文本长度: {len(truncated_text)} 字符进行补全")
+        # truncated_text = full_text[:8000] if len(full_text) > 8000 else full_text
+        # print(f"使用文本长度: {len(truncated_text)} 字符进行补全")
         
         # 为缺失字段构建针对性检索Prompt
         supplement_prompt = f"""
         以下是招标文件片段：
-        {truncated_text}
+        {full_text}
         
         请补充提取以下缺失的字段（仅返回字段值，用JSON格式，未找到填null）：
         {json.dumps(missing_fields, ensure_ascii=False)}
