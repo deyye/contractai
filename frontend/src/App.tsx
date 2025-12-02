@@ -4,10 +4,12 @@ import { InboxOutlined, FilePdfOutlined, RocketOutlined } from '@ant-design/icon
 import { uploadPDF, startReview } from './api/service';
 import RiskPanel from './components/RiskPanel';
 import { pdfjs, Document, Page } from 'react-pdf';
-import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
-import 'react-pdf/dist/esm/Page/TextLayer.css';
 
-// 设置 PDF worker (必须)
+// 修正后的 CSS 引入路径 (去除 /esm/)
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
+
+// 设置 PDF worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
 
 const { Header, Content } = Layout;
@@ -25,16 +27,18 @@ const App: React.FC = () => {
     setLoading(true);
     setPdfFile(file);
     setReviewResult(null);
+    setExtractedText(""); // 清空旧文本
     try {
       const res = await uploadPDF(file);
       if (res.success) {
         setExtractedText(res.file_content);
-        message.success('文件解析成功，准备审查');
+        message.success('文件解析成功，点击“开始智能审查”即可分析');
       } else {
         message.error('文件解析失败: ' + res.message);
       }
     } catch (err) {
-      message.error('上传出错');
+      console.error(err);
+      message.error('上传请求失败，请检查后端服务');
     } finally {
       setLoading(false);
     }
@@ -43,28 +47,41 @@ const App: React.FC = () => {
 
   // 触发 AI 审查
   const handleReview = async () => {
-    if (!extractedText) return;
+    if (!extractedText) {
+      message.warning('请先上传 PDF 文件');
+      return;
+    }
     setLoading(true);
+    setReviewResult(null);
+    
     try {
       const res = await startReview(extractedText);
       if (res.status === 'success') {
-        // 后端返回的是双重序列化的 JSON，需要解析两次
-        // 第一次：res.result 是一个包含 JSON 字符串的字符串
-        // 实际数据结构可能直接就是 JSON 对象，取决于 IntegrationAgent 的封装
-        // 这里尝试直接解析 res.result
+        // 后端返回的双重序列化 JSON 处理
         try {
-          const parsed = JSON.parse(res.result);
-          // 如果解析出来还有 analysis 字段，说明就是我们要的
-          setReviewResult(parsed.analysis || parsed);
-          message.success('审查完成！');
+          // 尝试解析 result 字符串
+          let parsedData = res.result;
+          if (typeof res.result === 'string') {
+             parsedData = JSON.parse(res.result);
+          }
+          
+          console.log("AI Review Result:", parsedData);
+          
+          // 优先取 analysis 字段，如果没有则整体作为数据
+          const finalData = parsedData.analysis || parsedData;
+          setReviewResult(finalData);
+          message.success('智能审查完成！');
         } catch (e) {
           console.error("JSON Parse Error", e);
           message.warning("结果解析异常，显示原始文本");
-          setReviewResult({ raw: res.result });
+          setReviewResult({ raw: res.result }); // 降级显示
         }
+      } else {
+        message.error('审查失败: ' + (res.message || '未知错误'));
       }
     } catch (err) {
-      message.error('审查请求失败');
+      console.error(err);
+      message.error('审查请求超时或失败，请重试');
     } finally {
       setLoading(false);
     }
@@ -75,24 +92,24 @@ const App: React.FC = () => {
   }
 
   return (
-    <Layout style={{ height: '100vh' }}>
-      <Header style={{ display: 'flex', alignItems: 'center', color: 'white', fontSize: '18px' }}>
+    <Layout style={{ height: '100vh', overflow: 'hidden' }}>
+      <Header style={{ display: 'flex', alignItems: 'center', color: 'white', fontSize: '18px', padding: '0 24px' }}>
         <FilePdfOutlined style={{ marginRight: 10 }} /> 招标文件智能审查系统
       </Header>
       
-      <Content style={{ padding: '20px', height: 'calc(100vh - 64px)' }}>
+      <Content style={{ padding: '24px', height: 'calc(100vh - 64px)', overflow: 'hidden' }}>
         <Row gutter={24} style={{ height: '100%' }}>
           
           {/* 左侧：PDF 预览与上传区 */}
           <Col span={12} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
             
             {/* 上传区域 */}
-            <div style={{ height: !pdfFile ? '100%' : '150px', marginBottom: 20, transition: 'all 0.3s' }}>
+            <div style={{ height: !pdfFile ? '100%' : '140px', marginBottom: 16, transition: 'all 0.3s' }}>
               <Dragger 
                 accept=".pdf" 
                 beforeUpload={handleUpload} 
                 showUploadList={false}
-                style={{ height: '100%', background: '#fff' }}
+                style={{ height: '100%', background: '#fff', borderRadius: '8px' }}
               >
                 <p className="ant-upload-drag-icon"><InboxOutlined /></p>
                 <p className="ant-upload-text">点击或拖拽上传招标文件 (PDF)</p>
@@ -102,9 +119,30 @@ const App: React.FC = () => {
 
             {/* PDF 预览区域 */}
             {pdfFile && (
-              <div style={{ flex: 1, overflowY: 'auto', background: '#e6e6e6', padding: 20, borderRadius: 8 }}>
-                <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'space-between' }}>
-                   <strong>{pdfFile.name}</strong>
+              <div style={{ 
+                flex: 1, 
+                overflowY: 'auto', 
+                background: '#525659', 
+                padding: '24px', 
+                borderRadius: '8px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center'
+              }}>
+                <div style={{ 
+                  width: '100%', 
+                  marginBottom: 16, 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  background: 'rgba(255,255,255,0.9)',
+                  padding: '8px 16px',
+                  borderRadius: '4px',
+                  position: 'sticky',
+                  top: -10,
+                  zIndex: 10
+                }}>
+                   <span style={{ fontWeight: 500 }}>{pdfFile.name}</span>
                    <Button 
                      type="primary" 
                      icon={<RocketOutlined />} 
@@ -119,16 +157,18 @@ const App: React.FC = () => {
                 <Document
                   file={pdfFile}
                   onLoadSuccess={onDocumentLoadSuccess}
-                  loading={<Spin tip="正在加载 PDF..." />}
+                  loading={<div style={{ color: 'white', marginTop: 20 }}><Spin size="large" /> <div style={{marginTop: 10}}>正在加载 PDF...</div></div>}
+                  error={<div style={{ color: 'white' }}>PDF 加载失败，请检查文件是否损坏</div>}
                 >
-                  {/* 简单渲染所有页面 */}
+                  {/* 渲染所有页面 */}
                   {Array.from(new Array(pdfNumPages), (el, index) => (
                     <Page 
                       key={`page_${index + 1}`} 
                       pageNumber={index + 1} 
-                      width={600} 
+                      width={550} 
                       renderTextLayer={false} 
-                      style={{ marginBottom: 10 }}
+                      className="pdf-page-shadow"
+                      style={{ marginBottom: 16 }}
                     />
                   ))}
                 </Document>
@@ -138,7 +178,7 @@ const App: React.FC = () => {
 
           {/* 右侧：AI 审查报告 */}
           <Col span={12} style={{ height: '100%' }}>
-            <RiskPanel analysisData={reviewResult} loading={loading && !!extractedText} />
+            <RiskPanel analysisData={reviewResult} loading={loading} />
           </Col>
 
         </Row>
