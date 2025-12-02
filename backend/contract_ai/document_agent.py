@@ -186,7 +186,14 @@ class DocumentProcessingAgent(BaseAgent):
             response = extraction_chain.invoke({"document_chunk": chunk_text})
             # 解析LLM输出的JSON
             extracted_data = extractor.extract(response.content)
-            return extracted_data
+            
+            # 修复：extract返回的是列表，需要取第一个元素
+            if extracted_data and isinstance(extracted_data, list) and len(extracted_data) > 0:
+                return extracted_data[0]
+            else:
+                print("警告：未提取到有效JSON数据")
+                return {field: None for field in TENDER_CORE_FIELDS}
+                
         except json.JSONDecodeError:
             print("警告：LLM输出格式错误，跳过该区块")
             return {field: None for field in TENDER_CORE_FIELDS}
@@ -196,11 +203,14 @@ class DocumentProcessingAgent(BaseAgent):
 
     def _merge_extracted_results(self, results_list: List[Dict[str, Any]]) -> Dict[str, Any]:
         """合并多区块提取结果:取非空值、去重、整合列表"""
+        print(f"_merge_extracted_results 接收到 {len(results_list)} 个结果")
         merged_result = {field: None for field in TENDER_CORE_FIELDS}
         
-        for result in results_list:
+        for idx, result in enumerate(results_list):
+            print(f"处理第 {idx+1} 个结果，类型: {type(result)}")
             # 修复:result本身就是字典,不需要通过[0]索引访问
             if not isinstance(result, dict):
+                print(f"  警告: 第 {idx+1} 个结果不是字典类型，跳过")
                 continue
                 
             for field in TENDER_CORE_FIELDS:
@@ -227,30 +237,49 @@ class DocumentProcessingAgent(BaseAgent):
     def _validate_and_supplement(self, merged_result: Dict[str, Any], full_text: str) -> Dict[str, Any]:
         """结果校验与补全：针对缺失的关键字段，用全文档快速检索"""
         missing_fields = [field for field in TENDER_CORE_FIELDS if merged_result[field] is None]
+        print(f"缺失字段数量: {len(missing_fields)}, 字段: {missing_fields}")
+        
         if not missing_fields:
+            print("无缺失字段，跳过补全")
             return merged_result
+        
+        # 如果缺失字段过多（>10个），可能提取失败，跳过补全避免浪费时间
+        if len(missing_fields) > 10:
+            print(f"缺失字段过多({len(missing_fields)}个)，跳过补全")
+            return merged_result
+        
+        # 限制全文长度，避免token超限（最多使用前8000字符）
+        truncated_text = full_text[:8000] if len(full_text) > 8000 else full_text
+        print(f"使用文本长度: {len(truncated_text)} 字符进行补全")
         
         # 为缺失字段构建针对性检索Prompt
         supplement_prompt = f"""
-        以下是招标文件全文：
-        {full_text}
+        以下是招标文件片段：
+        {truncated_text}
         
         请补充提取以下缺失的字段（仅返回字段值，用JSON格式，未找到填null）：
         {json.dumps(missing_fields, ensure_ascii=False)}
         
-        输出格式（仅JSON）：
+        输出格式（仅JSON，无其他内容）：
         {{
             "字段名": "值"
         }}
         """
         
         try:
+            print("开始调用LLM补全缺失字段...")
             response = self.llm.invoke(supplement_prompt)
+            print("LLM补全调用完成")
+            print("LLM补全调用完成")
             supplement_data = json.loads(response.content)
+            print(f"补全数据解析成功: {list(supplement_data.keys())}")
             # 补充缺失字段
             for field, value in supplement_data.items():
                 if field in missing_fields and value is not None and value != "null":
                     merged_result[field] = value
+                    print(f"  补全字段 {field}: {str(value)[:50]}...")
+        except json.JSONDecodeError as e:
+            print(f"补全缺失字段失败（JSON解析错误）：{str(e)}")
         except Exception as e:
             print(f"补全缺失字段失败：{str(e)}")
         
@@ -271,13 +300,20 @@ class DocumentProcessingAgent(BaseAgent):
         for section, chunk in keyword_chunks.items():
             print(f"正在提取【{section}】相关信息...")
             extracted = self._extract_from_chunk(chunk)
+            print(f"【{section}】提取结果类型: {type(extracted)}, 内容预览: {str(extracted)[:100]}...")
             results_list.append(extracted)
         
+        print(f"所有章节提取完成，results_list长度: {len(results_list)}")
+        
         # 4. 合并多区块结果
+        print("开始合并结果...")
         merged_result = self._merge_extracted_results(results_list)
+        print(f"合并完成，merged_result: {list(merged_result.keys())}")
         
         # 5. 校验并补全缺失字段
+        print("开始校验和补全...")
         final_result = self._validate_and_supplement(merged_result, cleaned_text)
+        print("校验补全完成")
         
         # 6. 格式化输出（美化JSON）
         final_result = {
@@ -1131,7 +1167,7 @@ class JSONExtractor:
     
 if __name__ == "__main__":
     agent = DocumentProcessingAgent()
-    with open('./data/zhaobiao_sample.txt', 'r', encoding='utf-8') as f:
+    with open('/home/star/81/12.1tender_reviewer/backend/uploads/zhaobiao_sample.txt', 'r', encoding='utf-8') as f:
         contract_text = f.read()
     print(f"已读取合同文件 ({len(contract_text)} 字符)")
     state = {
@@ -1142,4 +1178,4 @@ if __name__ == "__main__":
             "context": state.get("context", "")
         })
     agent.logger.info("招标文件处理结果：")
-    agent.logger.info(result['response_text'])  
+    agent.logger.info(result['response_text'])

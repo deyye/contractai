@@ -61,7 +61,7 @@ class ContractCoordinator(BaseAgent):
         workflow.add_node("plan_workflow", self.plan_workflow)
         workflow.add_node("document_processing", self.run_document_agent)
         workflow.add_node("parallel_analysis", self.run_parallel_agents)
-        workflow.add_node("highlight_issues", self.run_highlight_agent)
+        # workflow.add_node("highlight_issues", self.run_highlight_agent)
         workflow.add_node("integrate_results", self.run_integration_agent)
         
         # 定义边
