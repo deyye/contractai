@@ -5,7 +5,7 @@ import logging
 import requests
 from typing import Dict, List, Any, Optional
 
-# 设置日志格式，方便调试
+# 设置日志格式
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 from langchain_core.messages import HumanMessage
@@ -61,7 +61,6 @@ class ContractCoordinator(BaseAgent):
         workflow.add_node("plan_workflow", self.plan_workflow)
         workflow.add_node("document_processing", self.run_document_agent)
         workflow.add_node("parallel_analysis", self.run_parallel_agents)
-        # workflow.add_node("highlight_issues", self.run_highlight_agent)
         workflow.add_node("integrate_results", self.run_integration_agent)
         
         # 定义边
@@ -77,185 +76,341 @@ class ContractCoordinator(BaseAgent):
         """规划工作流"""
         try:
             user_request = state.get("user_input", "")
-            self.logger.info(f"STEP 1: 规划工作流 - 输入长度: {len(user_request)}")
+            self.logger.info(f"🔄 STEP 1: 规划工作流 - 输入长度: {len(user_request)}")
             
-            # 这里可以使用更简单的逻辑，避免每次都调 LLM 规划，节省时间
-            # 如果必须调用，请确保有超时控制
+            # 使用简单逻辑，避免额外的LLM调用
             workflow_plan = "标准审查流程: 文档解析 -> 法律/商业分析 -> 整合报告"
             
+            self.logger.info(f"✅ 工作流规划完成: {workflow_plan}")
             return {
                 **state,
                 "workflow_plan": workflow_plan,
                 "error": None
             }
         except Exception as e:
-            self.logger.error(f"规划工作流失败: {str(e)}")
+            self.logger.error(f"❌ 规划工作流失败: {str(e)}")
             return {**state, "error": str(e)}
     
     def run_document_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """文档处理节点"""
-        self.logger.info("STEP 2: 执行文档处理")
+        self.logger.info("🔄 STEP 2: 执行文档处理")
         try:
             document_agent = self.agents["document"]
             
-            # 增加 try-catch 捕获文档处理内部的错误（如 JSON 解析失败）
+            # 调用文档处理agent
             result = document_agent.invoke({
                 "text": state["user_input"],
                 "context": state.get("context", "")
             })
             
-            # 简单的结果验证
+            # 验证结果
             if not result:
                 raise ValueError("文档处理 Agent 返回为空")
+            
+            # 检查是否是错误结果
+            if isinstance(result, dict) and result.get("status") == "error":
+                error_msg = result.get("message", "未知错误")
+                self.logger.error(f"❌ 文档处理返回错误: {error_msg}")
+                return {
+                    **state,
+                    "document_result": result,
+                    "context": f"文档处理失败: {error_msg}",
+                    "error": error_msg
+                }
 
-            self.logger.info(f"文档处理完成，结果摘要: {str(result)[:100]}...")
+            self.logger.info(f"✅ 文档处理完成")
+            
+            # 提取关键信息用于后续分析
+            context_summary = self._build_context_summary(result)
             
             return {
                 **state,
-                "context": f"文档结构化信息：{result}", # 将结构化结果传入 Context 供后续使用
-                "document_result": result
+                "context": context_summary,
+                "document_result": result,
+                "error": None
             }
         except Exception as e:
-            self.logger.error(f"文档处理步骤发生严重错误: {str(e)}", exc_info=True)
-            # 返回错误状态，但不中断流程，让后续步骤知道出错了
+            self.logger.error(f"❌ 文档处理步骤发生严重错误: {str(e)}", exc_info=True)
             return {
                 **state, 
-                "document_result": {"error": str(e)},
-                "context": f"文档处理失败: {str(e)}"
+                "document_result": {"status": "error", "message": str(e)},
+                "context": f"文档处理失败: {str(e)}",
+                "error": str(e)
             }
-
-    async def _execute_parallel_tasks(self, context_text: str):
-        """辅助方法：真正的并发执行"""
-        # 使用 ainvoke 确保是异步调用
-        # 注意：LegalAgent 和 BusinessAgent 内部必须实现异步逻辑或不阻塞主线程
-        legal_future = self.agents["legal"].ainvoke({"text": context_text})
-        business_future = self.agents["business"].ainvoke({"text": context_text})
-        
-        # 使用 asyncio.gather 并发等待所有结果
-        return await asyncio.gather(legal_future, business_future, return_exceptions=True)
-
-    async def run_parallel_agents_async(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """异步版本的并行分析节点"""
-        self.logger.info("STEP 3: 执行并行分析 (法律 + 商业)")
-        context = state.get("context", "")
-        
+    
+    def _build_context_summary(self, document_result: Dict[str, Any]) -> str:
+        """从文档处理结果中提取摘要信息"""
         try:
-            # 并发执行
-            results = await self._execute_parallel_tasks(context)
-            legal_result, business_result = results
-
-            # 处理可能的异常（因为 return_exceptions=True）
-            if isinstance(legal_result, Exception):
-                self.logger.error(f"法律分析出错: {legal_result}")
-                legal_result = f"法律分析失败: {str(legal_result)}"
+            # 如果document_result是字典格式
+            if isinstance(document_result, dict):
+                # 提取response_text字段
+                if "response_text" in document_result:
+                    return f"文档处理结果:\n{document_result['response_text']}"
+                
+                # 或者提取analysis字段
+                if "analysis" in document_result:
+                    analysis = document_result["analysis"]
+                    if isinstance(analysis, dict):
+                        # 提取关键信息
+                        key_info = analysis.get("key_tender_information", {})
+                        summary_parts = []
+                        if key_info:
+                            summary_parts.append(f"项目名称: {key_info.get('tender_title', '未知')}")
+                            summary_parts.append(f"招标编号: {key_info.get('tender_number', '未知')}")
+                            summary_parts.append(f"项目预算: {key_info.get('project_budget', '未知')}")
+                        return "文档关键信息:\n" + "\n".join(summary_parts) if summary_parts else "文档处理完成"
             
-            if isinstance(business_result, Exception):
-                self.logger.error(f"商业分析出错: {business_result}")
-                business_result = f"商业分析失败: {str(business_result)}"
-
-            self.logger.info("并行分析完成")
-            return {
-                **state,
-                "legal_result": legal_result,
-                "business_result": business_result
-            }
+            # 如果是字符串
+            if isinstance(document_result, str):
+                return f"文档处理结果: {document_result[:500]}..."
+            
+            return f"文档处理结果: {str(document_result)[:500]}..."
         except Exception as e:
-            self.logger.error(f"并行分析步骤崩溃: {str(e)}")
-            return {**state, "error": str(e)}
+            self.logger.warning(f"构建上下文摘要失败: {e}")
+            return "文档处理完成（摘要生成失败）"
 
     def run_parallel_agents(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        同步包装器：为了适配 LangGraph 如果它在同步模式下运行。
-        但在生产环境中，建议直接使用异步 Graph。
-        这里为了修复原本 asyncio.run 的问题，我们尝试获取当前 Loop。
+        并行分析节点（同步版本）
+        注意: BaseAgent没有ainvoke方法，这里使用同步调用但模拟并行效果
         """
+        self.logger.info("🔄 STEP 3: 执行并行分析 (法律 + 商业)")
+        context = state.get("context", "")
+        
+        # 检查是否有错误需要跳过分析
+        if state.get("error"):
+            self.logger.warning("⚠️ 检测到上游错误，跳过分析步骤")
+            return {
+                **state,
+                "legal_result": "因文档处理失败而跳过法律分析",
+                "business_result": "因文档处理失败而跳过商业分析"
+            }
+        
         try:
-            loop = asyncio.get_running_loop()
-            # 如果已经在 Loop 中（例如 FastAPI），必须使用 create_task 或直接 await（如果当前函数是 async）
-            # 由于 LangGraph 节点定义通常是同步函数签名，这里是一个 tricky 的点。
-            # 最佳实践是将 graph 编译为异步，然后节点函数全部定义为 async def。
-            # 这里为了兼容性，使用 nest_asyncio 或者假设外部调用是同步的。
+            # 方案1: 真正的并行（使用线程）
+            # 注意：由于GIL，Python的多线程在CPU密集型任务上不会真正并行
+            # 但对于I/O密集型任务（如LLM API调用）是有效的
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import time
             
-            # 临时方案：如果已经在 loop 中，说明是异步环境，这里作为同步节点会阻塞。
-            # 建议：将此方法改为 async def run_parallel_agents(...)，LangGraph 支持 async 节点。
-            import nest_asyncio
-            nest_asyncio.apply()
-            return loop.run_until_complete(self.run_parallel_agents_async(state))
-        except RuntimeError:
-            # 如果没有运行的 loop，则创建一个新的
-            return asyncio.run(self.run_parallel_agents_async(state))
+            start_time = time.time()
+            
+            def call_legal():
+                self.logger.info("  📝 开始法律分析...")
+                result = self.agents["legal"].invoke({"text": context})
+                self.logger.info(f"  ✅ 法律分析完成 (耗时: {time.time() - start_time:.2f}秒)")
+                return result
+            
+            def call_business():
+                self.logger.info("  💼 开始商业分析...")
+                result = self.agents["business"].invoke({"text": context})
+                self.logger.info(f"  ✅ 商业分析完成 (耗时: {time.time() - start_time:.2f}秒)")
+                return result
+            
+            # 使用线程池并发执行
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # 提交任务
+                legal_future = executor.submit(call_legal)
+                business_future = executor.submit(call_business)
+                
+                # 等待结果（设置超时）
+                try:
+                    legal_result = legal_future.result(timeout=120)  # 2分钟超时
+                except Exception as e:
+                    self.logger.error(f"  ❌ 法律分析出错: {e}")
+                    legal_result = f"法律分析失败: {str(e)}"
+                
+                try:
+                    business_result = business_future.result(timeout=120)  # 2分钟超时
+                except Exception as e:
+                    self.logger.error(f"  ❌ 商业分析出错: {e}")
+                    business_result = f"商业分析失败: {str(e)}"
 
-    def run_highlight_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """重点标注节点"""
-        # ... (保持原逻辑，增加 try-except)
-        return state
+            total_time = time.time() - start_time
+            self.logger.info(f"✅ 并行分析完成 (总耗时: {total_time:.2f}秒)")
+            
+            return {
+                **state,
+                "legal_result": legal_result,
+                "business_result": business_result,
+                "error": None
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ 并行分析步骤崩溃: {str(e)}", exc_info=True)
+            return {
+                **state, 
+                "legal_result": f"法律分析失败: {str(e)}",
+                "business_result": f"商业分析失败: {str(e)}",
+                "error": str(e)
+            }
 
     def run_integration_agent(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """结果整合节点"""
-        self.logger.info("STEP 4: 整合结果")
+        self.logger.info("🔄 STEP 4: 整合所有分析结果")
         try:
             integration_agent = self.agents["integration"]
             
+            # 收集所有结果
+            results_to_integrate = {
+                "document": state.get("document_result"),
+                "legal": state.get("legal_result"),
+                "business": state.get("business_result"),
+            }
+            
+            self.logger.info(f"  准备整合的结果类型: {[type(v).__name__ for v in results_to_integrate.values()]}")
+            
+            # 调用整合agent
             final_result = integration_agent.invoke({
-                "results": {
-                    "document": state.get("document_result"),
-                    "legal": state.get("legal_result"),
-                    "business": state.get("business_result"),
-                }
+                "results": results_to_integrate
             })
             
-            return {**state, "final_response": json.dumps(final_result, ensure_ascii=False)}
+            # 将结果转换为JSON字符串
+            if isinstance(final_result, dict):
+                final_response = json.dumps(final_result, ensure_ascii=False, indent=2)
+            elif isinstance(final_result, str):
+                final_response = final_result
+            else:
+                final_response = str(final_result)
+            
+            self.logger.info(f"✅ 报告生成完成 (长度: {len(final_response)} 字符)")
+            
+            return {
+                **state, 
+                "final_response": final_response,
+                "error": None
+            }
         except Exception as e:
-            self.logger.error(f"整合报告失败: {e}")
-            return {**state, "final_response": "生成报告时发生错误，请检查日志。"}
+            self.logger.error(f"❌ 整合报告失败: {e}", exc_info=True)
+            error_response = {
+                "status": "error",
+                "message": f"生成报告时发生错误: {str(e)}",
+                "partial_results": {
+                    "document": str(state.get("document_result", "无"))[:200],
+                    "legal": str(state.get("legal_result", "无"))[:200],
+                    "business": str(state.get("business_result", "无"))[:200]
+                }
+            }
+            return {
+                **state, 
+                "final_response": json.dumps(error_response, ensure_ascii=False, indent=2),
+                "error": str(e)
+            }
 
     def process_text_message(self, message: HumanMessage) -> HumanMessage:
         """处理用户请求（入口方法）"""
         user_input = message.content
         thread_id = str(uuid.uuid4())
-        self.logger.info(f"收到请求，Thread ID: {thread_id}")
+        self.logger.info(f"\n{'='*60}")
+        self.logger.info(f"🚀 收到新的审查请求")
+        self.logger.info(f"📝 Thread ID: {thread_id}")
+        self.logger.info(f"📄 输入长度: {len(user_input)} 字符")
+        self.logger.info(f"{'='*60}\n")
         
-        # 运行 LangGraph 工作流
-        # 注意：这里直接调用 invoke 是同步阻塞的
-        result = self.graph.invoke({
-                "user_input": user_input,
-                "context": "",
-                "final_response": ""
-            },
-            config={"configurable": {"thread_id": thread_id}}
-        )
-        
-        return HumanMessage(content=result.get("final_response", "No response generated"))
+        try:
+            # 运行 LangGraph 工作流
+            result = self.graph.invoke(
+                {
+                    "user_input": user_input,
+                    "context": "",
+                    "final_response": "",
+                    "error": None
+                },
+                config={"configurable": {"thread_id": thread_id}}
+            )
+            
+            final_response = result.get("final_response", "未生成报告")
+            
+            # 检查是否有错误
+            if result.get("error"):
+                self.logger.warning(f"⚠️ 工作流执行过程中出现错误: {result['error']}")
+            else:
+                self.logger.info(f"✅ 工作流执行成功")
+            
+            self.logger.info(f"\n{'='*60}")
+            self.logger.info(f"🏁 审查流程完成")
+            self.logger.info(f"{'='*60}\n")
+            
+            return HumanMessage(content=final_response)
+            
+        except Exception as e:
+            self.logger.error(f"❌ 工作流执行失败: {str(e)}", exc_info=True)
+            error_message = f"审查流程失败: {str(e)}\n请检查日志获取详细信息"
+            return HumanMessage(content=error_message)
 
     def parse_pdf_through_api(self, file_path, api_url="http://127.0.0.1:8000/api/pdf/upload"):
+        """通过API解析PDF文件"""
         try:
-            self.logger.info(f"开始上传 PDF: {file_path}")
+            self.logger.info(f"📤 开始上传 PDF: {file_path}")
+            
+            import os
+            if not os.path.exists(file_path):
+                self.logger.error(f"❌ 文件不存在: {file_path}")
+                return {'status': 'error', 'message': f"文件不存在: {file_path}"}
+            
+            file_size = os.path.getsize(file_path)
+            self.logger.info(f"  文件大小: {file_size / 1024:.2f} KB")
+            
             with open(file_path, 'rb') as file:
                 files = {'file': (file_path.split('/')[-1], file, 'application/pdf')}
-                response = requests.post(api_url, files=files, timeout=120) # 增加超时时间到 120s
+                
+                self.logger.info(f"  正在调用PDF解析API: {api_url}")
+                response = requests.post(api_url, files=files, timeout=120)
                 
                 if response.status_code == 200:
-                    self.logger.info("PDF 解析 API 返回成功")
-                    return response.json() # 这里假设 API 直接返回 JSON 结构
+                    self.logger.info("✅ PDF 解析成功")
+                    return response.json()
                 else:
-                    self.logger.error(f"PDF 解析失败: {response.status_code} - {response.text}")
-                    return {'status': 'error', 'message': f"API Error: {response.status_code}"}
+                    self.logger.error(f"❌ PDF 解析失败: HTTP {response.status_code}")
+                    self.logger.error(f"  响应内容: {response.text[:500]}")
+                    return {
+                        'status': 'error', 
+                        'message': f"API Error: {response.status_code} - {response.text[:200]}"
+                    }
+                    
+        except FileNotFoundError:
+            self.logger.error(f"❌ 文件未找到: {file_path}")
+            return {'status': 'error', 'message': f"文件未找到: {file_path}"}
+        except requests.exceptions.Timeout:
+            self.logger.error(f"❌ PDF解析API超时")
+            return {'status': 'error', 'message': "PDF解析超时，请检查文件大小或API状态"}
         except Exception as e:
-            self.logger.error(f"文件操作异常: {e}")
+            self.logger.error(f"❌ 文件操作异常: {e}", exc_info=True)
             return {'status': 'error', 'message': str(e)}
 
 if __name__ == "__main__":
-    # 单元测试逻辑
-    import os
+    print("\n" + "="*60)
+    print("合同审查系统 - 测试模式")
+    print("="*60 + "\n")
+    
+    # 创建协调器
     coordinator = ContractCoordinator()
     
+    # 测试PDF解析
     pdf_file_path = "/home/star/81/bidgen/交易招标文件.pdf"
+    
+    print(f"📂 PDF文件路径: {pdf_file_path}\n")
+    
     result = coordinator.parse_pdf_through_api(pdf_file_path)
+    
     if result.get("success"):
         test_content = result.get("file_content", "")
+        print(f"✅ PDF解析成功，内容长度: {len(test_content)} 字符\n")
     else:
+        print(f"❌ PDF解析失败: {result.get('message', '未知错误')}\n")
         test_content = "无法解析 PDF 文件内容。"
-    print("开始测试工作流...")
-    test_request = HumanMessage(content=f"""请审查这份招标文件: {test_content}""")
+    
+    # 开始审查流程
+    print("="*60)
+    print("开始执行合同审查工作流...")
+    print("="*60 + "\n")
+    
+    test_request = HumanMessage(content=f"""请审查这份招标文件: {test_content[:5000]}""")  # 限制长度避免超长
+    
     response = coordinator.process_text_message(test_request)
-    print(f"最终报告：{response.content}")
+    
+    print("\n" + "="*60)
+    print("最终审查报告")
+    print("="*60)
+    print(response.content)
+    print("="*60 + "\n")
