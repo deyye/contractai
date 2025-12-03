@@ -171,8 +171,8 @@ class ContractCoordinator(BaseAgent):
             
             # 调用文档处理
             result = document_agent.invoke({
-                "text": user_input
-                # "context": ""
+                "text": user_input,
+                "context": ""
             })
             
             # 提取关键信息（减少数据传输）

@@ -83,7 +83,7 @@ class ContractReviewAgent(BaseAgent):
             ]
         }
     
-    def process_text_message(self, message):
+    def process_text_message(self, message, context=None):
         """Process contract review requests"""
         user_text = message
         self.logger.info("Processing contract review request")

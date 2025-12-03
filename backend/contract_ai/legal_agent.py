@@ -58,7 +58,7 @@ class LegalAgent(BaseAgent):
             ]
         }
     
-    def process_text_message(self, message):
+    def process_text_message(self, message, context=None):
         """Process tender document analysis requests"""
         user_text = message
         self.logger.info("Processing tender document analysis request")

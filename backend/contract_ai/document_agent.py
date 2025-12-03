@@ -327,7 +327,7 @@ class DocumentProcessingAgent(BaseAgent):
         self.logger.info(f"提取完成，结果：{final_result}")
         return final_result
     
-    def process_text_message(self, message):
+    def process_text_message(self, message, context=None):
         """Process tender document analysis requests"""
         user_text = message
         self.logger.info("Processing tender document analysis request")

@@ -105,7 +105,7 @@ class HighlightAgent(BaseAgent):
             }
         }
     
-    def process_text_message(self, message):
+    def process_text_message(self, message, context=None):
         """Process highlighting requests"""
         user_text = message
         self.logger.info("Processing highlight analysis request")

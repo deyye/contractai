@@ -124,7 +124,7 @@ curl -X POST http://localhost:7000/review \
        def __init__(self):
            super().__init__("NewFunctionAgent", "系统提示词")
        
-       def process_text_message(self, message):
+       def process_text_message(self, message, context=None):
            # 实现自定义处理逻辑
    ```
 2. 在协调器中注册新智能体（`coordinator.py`）
