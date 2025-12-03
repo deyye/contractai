@@ -68,12 +68,9 @@ async def start_review(request: ReviewRequest):
         from langchain_core.messages import HumanMessage
         msg = HumanMessage(content=request.contract_text)
         
-        # 调用你的 Coordinator
-        # process_text_message 是同步的还是异步的？
         # 你的 coordinator.py 中 process_text_message 是同步方法，但内部调用了 graph.invoke
         response = coordinator.process_text_message(msg)
         
-        # 你的 process_text_message 返回的是 HumanMessage 对象
         return {
             "status": "success",
             "result": response.content
