@@ -689,7 +689,7 @@ class HighlightAgent(BaseAgent):
         analysis_prompt = f"""
         请对以下合同文本进行重点标注分析：
         
-        合同文本：{text[:1500]}...
+        合同文本：{text}...
         
         请识别并分析：
         1. 最重要的关键条款和信息点

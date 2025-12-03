@@ -73,10 +73,7 @@ def performance_monitor(func):
             result = func(self, *args, **kwargs)
             elapsed = time.time() - start_time
             
-            if Config.LOG_CONFIG.enable_performance_log:
-                self.logger.info(
-                    f"⏱️ {func.__name__} 执行时间: {elapsed:.2f}秒"
-                )
+            self.logger.info(f"⏱️ {func.__name__} 执行时间: {elapsed:.2f}秒")
             
             # 记录性能指标
             if not hasattr(self, '_performance_metrics'):

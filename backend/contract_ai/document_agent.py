@@ -394,7 +394,7 @@ class DocumentProcessingAgent(BaseAgent):
             "tender_parties": tender_parties,  
             "financial_terms": self.extract_tender_financial_terms(document_text),
             "timeline_information": self.extract_tender_timeline(document_text),
-            "qualification_requirements": self.extract_qualification_requirements(document_text),
+            "qualification_requirements": key_tender_info.get("qualification_requirements") or self.extract_qualification_requirements(document_text),
             "evaluation_criteria": self.extract_evaluation_criteria(document_text),
             # "format_issues": self.identify_format_issues(document_text),
             "text_statistics": self.calculate_text_statistics(document_text)

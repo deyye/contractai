@@ -208,7 +208,7 @@ class ContractCoordinator(BaseAgent):
         try:
             if isinstance(result, dict):
                 # 只提取关键字段
-                key_fields = ["key_points", "summary", "risk_areas", "important_clauses"]
+                key_fields = ["key_points", "summary", "risk_areas", "important_clauses", "analysis"]
                 extracted = {}
                 
                 for field in key_fields:
@@ -248,7 +248,11 @@ class ContractCoordinator(BaseAgent):
         
         try:
             # 准备共享输入（使用压缩后的上下文）
+            raw_input = state.get("user_input", "")
             context_summary = state.get("context_summary", "")
+            
+            # 组合输入：让智能体既能看到结构化摘要，也能查阅原文
+            combined_input = f"文档摘要：\n{context_summary}\n\n原文内容：\n{raw_input}"
             
             # 并行执行
             legal_agent = self.agents.get("legal")
@@ -262,13 +266,13 @@ class ContractCoordinator(BaseAgent):
                 self.executor.submit(
                     self._safe_agent_invoke, 
                     legal_agent, 
-                    context_summary,
+                    combined_input,
                     "法律分析"
                 ): "legal",
                 self.executor.submit(
                     self._safe_agent_invoke,
                     business_agent,
-                    context_summary,
+                    combined_input,
                     "商业分析"
                 ): "business"
             }

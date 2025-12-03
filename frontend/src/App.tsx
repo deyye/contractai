@@ -241,9 +241,9 @@ const App: React.FC = () => {
                   style={{ marginBottom: 24 }}
                 />
               ))}
-              {pdfNumPages > 150 && (
+              {pdfNumPages > 15 && (
                   <div style={{ textAlign: 'center', padding: 20, color: '#fff' }}>
-                      仅展示前 150 页预览
+                      仅展示前 15 页预览
                   </div>
               )}
             </PDFDocument>

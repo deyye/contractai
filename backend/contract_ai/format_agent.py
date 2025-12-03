@@ -686,7 +686,7 @@ class FormatAgent(BaseAgent):
         analysis_prompt = f"""
         请对以下合同文档进行专业的格式分析：
         
-        文档内容：{text[:1500]}...
+        文档内容：{text}...
         
         请从以下格式角度进行详细分析：
         1. 文档整体结构和布局
