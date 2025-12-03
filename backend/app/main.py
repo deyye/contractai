@@ -14,10 +14,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# 跨域配置 (允许前端访问)
+# 1. 配置 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 生产环境建议改为 ["http://localhost:5173"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

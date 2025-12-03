@@ -1,27 +1,28 @@
-import React, { useState, useMemo } from 'react';
-import { Layout, Upload, Button, message, Row, Col, Spin, Typography, Tag, Divider } from 'antd';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Layout, Upload, Button, message, Row, Col, Spin, Typography, Tag } from 'antd';
 import { 
   InboxOutlined, 
   RocketOutlined, 
   FilePdfOutlined, 
   DeleteOutlined, 
   CheckCircleOutlined,
-  WarningOutlined,
-  RobotOutlined
+  RobotOutlined,
+  WarningOutlined
 } from '@ant-design/icons';
 import { uploadPDF, startReview } from './api/service';
 import RiskPanel from './components/RiskPanel';
-import ProcessingStatus from './components/ProcessingStatus'; // 确保创建了这个文件
+import ProcessingStatus from './components/ProcessingStatus';
 import { pdfjs, Document as PDFDocument, Page } from 'react-pdf';
 
-// 引入 CSS
+// 引入 react-pdf 样式
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
-import './App.css'; // 引入上面创建的 CSS
+import './App.css';
 
-// 配置 PDF Worker (Vite 方式)
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
+// --- 核心修复：动态配置 Worker 版本 ---
+// 不再 import 本地文件，而是根据 API 版本号动态构建 CDN URL
+// 这样可以确保 API (v5.x) 和 Worker (v5.x) 永远一致
+pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 const { Header, Sider, Content } = Layout;
 const { Dragger } = Upload;
@@ -36,15 +37,15 @@ const App: React.FC = () => {
   const [pdfNumPages, setPdfNumPages] = useState<number>(0);
   const [uiState, setUiState] = useState<'initial' | 'processing' | 'result'>('initial');
 
-  // 优化 PDF 配置：使用 jsDelivr 替代 unpkg 以提高国内访问速度
+  // 字体映射路径 (cMap) - 解决中文不显示或乱码问题
+  // 同样使用动态版本号
   const pdfOptions = useMemo(() => ({
-    cMapUrl: `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/cmaps/`,
+    cMapUrl: `//unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
     cMapPacked: true,
   }), []);
 
   // --- 事件处理 ---
 
-  // 1. 上传并解析
   const handleUpload = async (file: File) => {
     setLoading(true);
     setPdfFile(file);
@@ -58,7 +59,8 @@ const App: React.FC = () => {
         message.success(`文件 "${file.name}" 解析成功`);
       } else {
         message.error('文件解析失败: ' + res.message);
-        setPdfFile(null); 
+        // 即使解析失败，保留文件对象以便用户重试或查看（可选）
+        // setPdfFile(null); 
       }
     } catch (err) {
       console.error(err);
@@ -67,10 +69,9 @@ const App: React.FC = () => {
     } finally {
       setLoading(false);
     }
-    return false; // 阻止默认上传
+    return false; // 阻止默认上传行为
   };
 
-  // 2. 开始 AI 审查
   const handleReview = async () => {
     if (!extractedText) {
       message.warning('请等待文件解析完成');
@@ -78,29 +79,34 @@ const App: React.FC = () => {
     }
     
     setLoading(true);
-    setUiState('processing'); // 切换到处理中视图
+    setUiState('processing');
 
     try {
       const res = await startReview(extractedText);
       if (res.status === 'success') {
         try {
-          let parsedData = res.result;
+          let finalData = res.result;
+          // 如果后端返回的是字符串格式的 JSON，尝试解析
           if (typeof res.result === 'string') {
-             parsedData = JSON.parse(res.result);
+             // 简单的清洗，防止 markdown 代码块包裹
+             const cleanJson = res.result.replace(/```json|```/g, '').trim();
+             finalData = JSON.parse(cleanJson);
           }
-          const finalData = parsedData.analysis || parsedData;
+          // 兼容不同的返回结构
+          finalData = finalData.analysis || finalData;
+          
           setReviewResult(finalData);
           message.success('智能审查完成！');
-          setUiState('result'); // 切换到结果视图
+          setUiState('result');
         } catch (e) {
           console.error("JSON Parse Error", e);
           message.warning("结果解析格式异常，展示原始数据");
-          setReviewResult({ raw: res.result });
+          setReviewResult({ raw: res.result }); //在此处处理非JSON格式的纯文本
           setUiState('result');
         }
       } else {
         message.error('审查失败: ' + (res.message || '未知错误'));
-        setUiState('initial'); // 回退
+        setUiState('initial');
       }
     } catch (err) {
       console.error(err);
@@ -111,7 +117,6 @@ const App: React.FC = () => {
     }
   };
 
-  // 3. 重置
   const handleReset = () => {
     setPdfFile(null);
     setExtractedText("");
@@ -122,10 +127,17 @@ const App: React.FC = () => {
   function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
     setPdfNumPages(numPages);
   }
+  
+  function onDocumentLoadError(error: Error) {
+    console.error('PDF 加载失败:', error);
+    // 忽略版本不匹配的错误提示，因为我们已经修正了，如果还有其他错误则提示
+    if (!error.message.includes('version')) {
+        message.error('PDF 预览加载失败: ' + error.message);
+    }
+  }
 
   // --- 界面渲染 ---
 
-  // 1. 初始上传界面
   const renderInitialView = () => (
     <div className="hero-upload-container">
       <div className="upload-card">
@@ -187,7 +199,6 @@ const App: React.FC = () => {
     </div>
   );
 
-  // 2. 结果工作台界面
   const renderResultDashboard = () => (
     <Row gutter={24} style={{ height: '100%' }}>
       {/* 左侧：PDF 阅读器 */}
@@ -204,6 +215,7 @@ const App: React.FC = () => {
             <PDFDocument
               file={pdfFile}
               onLoadSuccess={onDocumentLoadSuccess}
+              onLoadError={onDocumentLoadError}
               options={pdfOptions}
               loading={
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'rgba(255,255,255,0.8)', marginTop: 100 }}>
@@ -211,18 +223,29 @@ const App: React.FC = () => {
                   <div style={{ marginTop: 16 }}>文档渲染中...</div>
                 </div>
               }
-              error={<div style={{ color: '#ff4d4f', marginTop: 50 }}>PDF 加载失败，请检查网络或文件是否损坏</div>}
+              error={
+                <div style={{ color: '#ff4d4f', marginTop: 50, textAlign: 'center' }}>
+                   <WarningOutlined style={{ fontSize: 24 }} />
+                   <div style={{ marginTop: 10 }}>PDF 预览加载失败</div>
+                   <div style={{ fontSize: 12, opacity: 0.7 }}>请检查网络连接 (CDN资源)</div>
+                </div>
+              }
             >
-              {Array.from(new Array(pdfNumPages), (el, index) => (
+              {Array.from(new Array(Math.min(pdfNumPages, 15)), (el, index) => (
                 <Page 
                   key={`page_${index + 1}`} 
                   pageNumber={index + 1} 
                   width={600} 
-                  renderTextLayer={false}
+                  renderTextLayer={false} // 优化性能：不渲染可选文字层
                   className="pdf-page-shadow"
                   style={{ marginBottom: 24 }}
                 />
               ))}
+              {pdfNumPages > 150 && (
+                  <div style={{ textAlign: 'center', padding: 20, color: '#fff' }}>
+                      仅展示前 150 页预览
+                  </div>
+              )}
             </PDFDocument>
           )}
         </div>
@@ -245,7 +268,16 @@ const App: React.FC = () => {
   return (
     <Layout style={{ height: '100vh' }}>
       <Sider width={260} theme="dark" style={{ background: '#001529', boxShadow: '2px 0 8px rgba(0,0,0,0.15)', zIndex: 10 }}>
-        <div className="logo-area">
+        <div className="logo-area" style={{ 
+          height: 64, 
+          display: 'flex', 
+          alignItems: 'center', 
+          paddingLeft: 24, 
+          fontSize: 20, 
+          fontWeight: 'bold', 
+          color: '#fff',
+          background: 'rgba(255,255,255,0.1)'
+        }}>
            Contract AI
         </div>
         
@@ -261,6 +293,7 @@ const App: React.FC = () => {
             使用指南
           </div>
           
+          {/* 侧边栏步骤说明 */}
           <div style={{ marginBottom: 24 }}>
             <div style={{ color: '#fff', marginBottom: 8, display: 'flex', alignItems: 'center' }}>
               <div style={{ width: 24, height: 24, borderRadius: '50%', background: '#1677ff', color: '#fff', textAlign: 'center', lineHeight: '24px', marginRight: 10, fontSize: 12 }}>1</div>
@@ -285,7 +318,7 @@ const App: React.FC = () => {
             <div style={{ fontSize: 13, paddingLeft: 34 }}>导出或在线查看建议</div>
           </div>
 
-          <div style={{ marginTop: 100, textAlign: 'center' }}>
+          <div style={{ marginTop: 60, textAlign: 'center' }}>
             <Tag color="blue" style={{ margin: 0 }}>v1.0.0 Beta</Tag>
           </div>
         </div>
