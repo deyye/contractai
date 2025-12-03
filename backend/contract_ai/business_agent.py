@@ -1049,4 +1049,4 @@ class ContractReviewAgent(BaseAgent):
         return "合同审查报告：\n\n" + json.dumps(analysis, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
-    agent = BusinessAgent()
+    agent = ContractReviewAgent()
